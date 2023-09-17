@@ -11,6 +11,7 @@ from basicsr.utils.registry import MODEL_REGISTRY
 from collections import OrderedDict
 from torch.nn import functional as F
 from torchvision.ops import roi_align
+from gfpgan.models.gfpgan_guide import build_guiding_loss
 from tqdm import tqdm
 
 
@@ -119,6 +120,15 @@ class GFPGANModel(BaseModel):
         # gan loss (wgan)
         self.cri_gan = build_loss(train_opt['gan_opt']).to(self.device)
 
+        #############################################################################################
+        # * Guiding loss *
+        if "guide" in self.opt["train"] and self.opt["train"]["guide"]:
+            self.path_labels = self.opt["datasets"]["train"]["path_labels"]
+            age_weight, gender_weight, eth_weight = self.opt['train']['age_weight'], self.opt['train']['gender_weight'], self.opt['train']['eth_weight']
+            guide_verbose = self.opt["train"]["guide_verbose"]
+            self.guiding_loss = build_guiding_loss(self.device, self.path_labels, age_weight, gender_weight, eth_weight, guide_verbose)
+        #############################################################################################
+
         # ----------- define identity loss ----------- #
         if 'network_identity' in self.opt:
             self.use_identity = True
@@ -199,6 +209,7 @@ class GFPGANModel(BaseModel):
             self.optimizers.append(self.optimizer_d_mouth)
 
     def feed_data(self, data):
+        self.gt_path = data["gt_path"][0]
         self.lq = data['lq'].to(self.device)
         if 'gt' in data:
             self.gt = data['gt'].to(self.device)
@@ -395,6 +406,16 @@ class GFPGANModel(BaseModel):
                 l_identity = self.cri_l1(identity_out, identity_gt) * identity_weight
                 l_g_total += l_identity
                 loss_dict['l_identity'] = l_identity
+
+            ######################
+            # * Guide *
+            ######################
+            if "guide" in self.opt["train"] and self.opt["train"]["guide"]:
+                guiding_weight = self.opt['train']['guiding_weight']
+                l_guide = self.guiding_loss(self.output, self.gt_path, loss_dict) * guiding_weight
+                l_g_total += l_guide
+                loss_dict['l_guide'] = l_guide
+            ######################
 
             l_g_total.backward()
             self.optimizer_g.step()
